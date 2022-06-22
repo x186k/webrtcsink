@@ -75,11 +75,11 @@ impl Signaller {
 
         // 1000 is completely arbitrary, we simply don't want infinite piling
         // up of messages as with unbounded
-        let (mut websocket_sender, mut websocket_receiver) =
+        let (mut whip_sender, mut whip_receiver) =
             mpsc::channel::<p::IncomingMessage>(1000);
         let element_clone = element.downgrade();
         let send_task_handle = task::spawn(async move {
-            while let Some(msg) = websocket_receiver.next().await {
+            while let Some(msg) = whip_receiver.next().await {
                 if let Some(element) = element_clone.upgrade() {
                     gst::trace!(CAT, obj: &element, "Sending websocket message {:?}", msg);
                 }
@@ -98,7 +98,7 @@ impl Signaller {
             Ok::<(), Error>(())
         });
 
-        websocket_sender
+        whip_sender
             .send(p::IncomingMessage::Register(p::RegisterMessage::Producer {
                 display_name: element.property("display-name"),
             }))
@@ -225,7 +225,7 @@ impl Signaller {
         });
 
         let mut state = self.state.lock().unwrap();
-        state.websocket_sender = Some(websocket_sender);
+        state.websocket_sender = Some(whip_sender);
         state.send_task_handle = Some(send_task_handle);
         state.receive_task_handle = Some(receive_task_handle);
 
