@@ -23,4 +23,4 @@ uuid = { version = "0.8", features = ["v4"] }
 thiserror = "1"
 test-log = { version = "0.2", features = ["trace"], default-features = false }
 pin-project-lite = "0.2"
-webrtcsink-protocol = { version = "0.1", path="../protocol" }
+#webrtcsink-protocol = { version = "0.1", path="../protocol" }
