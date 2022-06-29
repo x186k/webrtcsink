@@ -122,7 +122,13 @@ impl Signaller {
 
                         write!(xsdp, "{}", sdp).unwrap();
                     }
-                    WhipMessage::ConsumerRemoved { id: _ } => fun_name(),
+                    WhipMessage::ConsumerRemoved { id: _ } => {
+                        if let Err(err) = fun_name() {
+                            if let Some(element) = element_clone.upgrade() {
+                                element.handle_signalling_error(err.into());
+                            }
+                        }
+                    }
                     WhipMessage::GatherTimeout { id: _ } => println!("..GatherTimeout"),
                 }
             }
@@ -277,8 +283,16 @@ impl Signaller {
     }
 }
 
-fn fun_name() {
-    println!("..ConsumerRemoved")
+fn fun_name() -> Result<(), Error> {
+    println!("..ConsumerRemoved");
+
+    let rq = reqwest::blocking::Client::new();
+    let _r = rq
+        // .post("http://localhost:3000/foo")
+        .delete("http://192.168.86.3:7080/whip/resource/foo")
+        .send()?;
+
+    Ok(())
 }
 
 fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: String) -> Result<(), Error> {
