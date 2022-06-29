@@ -3,10 +3,11 @@ use anyhow::{anyhow, Error};
 use async_std::task;
 use futures::channel::mpsc;
 use futures::prelude::*;
-use gst::glib;
 use gst::glib::prelude::*;
+use gst::glib::{self, WeakRef};
 use gst::subclass::prelude::*;
 use once_cell::sync::Lazy;
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -41,11 +42,12 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WhipMessage {
     Ice { id: String, candidate: String, candix: u32 },
     Sdp { id: String, sdp: String },
     ConsumerRemoved { id: String },
+    GatherTimeout { id: String },
     //List,
 }
 
@@ -63,16 +65,66 @@ impl Signaller {
 
         // removed ws setup
 
+        let mut xsdp = "".to_string();
+
+        // let a = future::ready(1).delay(Duration::from_millis(2000));
+        // dbg!(a.await);
+
         // 1000 is completely arbitrary, we simply don't want infinite piling
         // up of messages as with unbounded
         let (whip_sender, mut whip_receiver) = mpsc::channel::<WhipMessage>(1000);
+
+        let w1 = whip_sender.clone();
+
         let element_clone = element.downgrade();
         let send_task_handle = task::spawn(async move {
             while let Some(msg) = whip_receiver.next().await {
                 if let Some(element) = element_clone.upgrade() {
                     gst::trace!(CAT, obj: &element, "Sending websocket message {:?}", msg);
                 }
+                //println!("got whip msg: {:?}", msg);
                 // removed wssend
+
+                // testing
+                match msg {
+                    WhipMessage::Ice {
+                        id,
+                        candidate,
+                        candix: _,
+                    } => {
+                        println!("..ice");
+                        if candidate.contains("candidate:18") {
+                            println!("..18.");
+                            //println!("{}", xsdp);
+
+                            if let Err(err) = do_whip(element_clone.clone(), id, xsdp.clone()) {
+                                if let Some(element) = element_clone.upgrade() {
+                                    element.handle_signalling_error(err.into());
+                                }
+                            }
+                        }
+
+                        writeln!(xsdp, "a={}", candidate).unwrap();
+                    }
+                    WhipMessage::Sdp { id: _, sdp } => {
+                        println!("..sdp");
+                        let mut w2 = w1.clone();
+
+                        let element_cl1 = element_clone.clone();
+                        task::spawn(async move {
+                            task::sleep(std::time::Duration::from_millis(500)).await;
+                            if let Err(err) = w2.send(WhipMessage::GatherTimeout { id: "".to_string() }).await {
+                                if let Some(element) = element_cl1.upgrade() {
+                                    element.handle_signalling_error(err.into());
+                                }
+                            }
+                        });
+
+                        write!(xsdp, "{}", sdp).unwrap();
+                    }
+                    WhipMessage::ConsumerRemoved { id: _ } => fun_name(),
+                    WhipMessage::GatherTimeout { id: _ } => println!("..GatherTimeout"),
+                }
             }
 
             if let Some(element) = element_clone.upgrade() {
@@ -103,6 +155,9 @@ impl Signaller {
         state.websocket_sender = Some(whip_sender);
         state.send_task_handle = Some(send_task_handle);
         state.receive_task_handle = Some(receive_task_handle);
+
+        // start everything rolling
+        element.add_consumer("xid")?;
 
         Ok(())
     }
@@ -220,6 +275,52 @@ impl Signaller {
             });
         }
     }
+}
+
+fn fun_name() {
+    println!("..ConsumerRemoved")
+}
+
+fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: String) -> Result<(), Error> {
+    writeln!(xsdp, "a=end-of-candidates").unwrap();
+
+    // println!("full sdp {}", xsdp);
+
+    println!("pre post: {}", &xsdp);
+
+    let rq = reqwest::blocking::Client::new();
+    let r = rq
+        // .post("http://localhost:3000/foo")
+        .post("http://192.168.86.3:7080/whip/endpoint/foo")
+        .header("Content-type", "application/sdp")
+        .body(xsdp)
+        .send()?;
+
+    println!("post, post");
+
+    if let Some(loc) = r.headers().get("Location") {
+        println!("location found: {:?}", loc);
+    }
+    let answer_sdp = r.bytes()?.to_vec();
+
+    // println!("answer_sdp {}", String::from_utf8(answer_sdp.clone())?);
+
+    println!("######### call handle_sdp");
+
+    // drop(state);
+    if let Some(element) = element_clone.upgrade() {
+        gst::trace!(CAT, obj: &element, "Giving SDP to sink");
+
+        element.handle_sdp(
+            &peer_id,
+            &gst_webrtc::WebRTCSessionDescription::new(
+                gst_webrtc::WebRTCSDPType::Answer,
+                gst_sdp::SDPMessage::parse_buffer(&answer_sdp.clone()).unwrap(),
+            ),
+        )?;
+    }
+
+    Ok(())
 }
 
 #[glib::object_subclass]
