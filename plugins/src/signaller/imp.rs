@@ -308,7 +308,8 @@ async fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: 
         .post(url)
         .header("Content-type", "application/sdp")
         .body(xsdp)
-        .send().await?;
+        .send()
+        .await?;
 
     println!("post, post");
 
