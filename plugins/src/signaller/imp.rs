@@ -74,6 +74,9 @@ impl Signaller {
         let w1 = whip_sender.clone();
 
         let element_clone = element.downgrade();
+
+        let url = self.settings.lock().unwrap().address.as_ref().unwrap().clone();
+
         let send_task_handle = task::spawn(async move {
             while let Some(msg) = whip_receiver.next().await {
                 if let Some(element) = element_clone.upgrade() {
@@ -94,7 +97,7 @@ impl Signaller {
                             println!("..18.");
                             //println!("{}", xsdp);
 
-                            if let Err(err) = do_whip(element_clone.clone(), id, xsdp.clone()) {
+                            if let Err(err) = do_whip(element_clone.clone(), id, xsdp.clone(), &url).await {
                                 if let Some(element) = element_clone.upgrade() {
                                     element.handle_signalling_error(err.into());
                                 }
@@ -120,7 +123,7 @@ impl Signaller {
                         write!(xsdp, "{}", sdp).unwrap();
                     }
                     WhipMessage::ConsumerRemoved { id: _ } => {
-                        if let Err(err) = fun_name() {
+                        if let Err(err) = whip_delete(&url, &("".to_string())) {
                             if let Some(element) = element_clone.upgrade() {
                                 element.handle_signalling_error(err.into());
                             }
@@ -280,7 +283,7 @@ impl Signaller {
     }
 }
 
-fn fun_name() -> Result<(), Error> {
+fn whip_delete(url: &String, loc: &String) -> Result<(), Error> {
     println!("..ConsumerRemoved");
 
     let rq = reqwest::blocking::Client::new();
@@ -292,27 +295,27 @@ fn fun_name() -> Result<(), Error> {
     Ok(())
 }
 
-fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: String) -> Result<(), Error> {
+async fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: String, url: &String) -> Result<(), Error> {
     writeln!(xsdp, "a=end-of-candidates").unwrap();
 
     // println!("full sdp {}", xsdp);
 
     println!("pre post: {}", &xsdp);
 
-    let rq = reqwest::blocking::Client::new();
+    let rq = reqwest::Client::new();
     let r = rq
         // .post("http://localhost:3000/foo")
-        .post("http://192.168.86.3:7080/whip/endpoint/foo")
+        .post(url)
         .header("Content-type", "application/sdp")
         .body(xsdp)
-        .send()?;
+        .send().await?;
 
     println!("post, post");
 
     if let Some(loc) = r.headers().get("Location") {
         println!("location found: {:?}", loc);
     }
-    let answer_sdp = r.bytes()?.to_vec();
+    let answer_sdp = r.bytes().await?.to_vec();
 
     // println!("answer_sdp {}", String::from_utf8(answer_sdp.clone())?);
 
@@ -344,15 +347,13 @@ impl ObjectSubclass for Signaller {
 impl ObjectImpl for Signaller {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
-            vec![
-                glib::ParamSpecString::new(
-                    "address",
-                    "Address",
-                    "Address of the signalling server",
-                    Some("ws://127.0.0.1:8443"),
-                    glib::ParamFlags::READWRITE,
-                ),
-            ]
+            vec![glib::ParamSpecString::new(
+                "address",
+                "Address",
+                "Address of the signalling server",
+                Some("ws://127.0.0.1:8443"),
+                glib::ParamFlags::READWRITE,
+            )]
         });
 
         PROPERTIES.as_ref()
