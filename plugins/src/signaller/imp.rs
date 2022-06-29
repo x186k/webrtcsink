@@ -8,7 +8,6 @@ use gst::glib::{self, WeakRef};
 use gst::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use std::fmt::Write;
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -30,14 +29,12 @@ struct State {
 #[derive(Clone)]
 struct Settings {
     address: Option<String>,
-    cafile: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             address: Some("ws://127.0.0.1:8443".to_string()),
-            cafile: None,
         }
     }
 }
@@ -355,13 +352,6 @@ impl ObjectImpl for Signaller {
                     Some("ws://127.0.0.1:8443"),
                     glib::ParamFlags::READWRITE,
                 ),
-                glib::ParamSpecString::new(
-                    "cafile",
-                    "CA file",
-                    "Path to a Certificate file to add to the set of roots the TLS connector will trust",
-                    None,
-                    glib::ParamFlags::READWRITE,
-                ),
             ]
         });
 
@@ -382,11 +372,6 @@ impl ObjectImpl for Signaller {
                     gst::error!(CAT, "address can't be None");
                 }
             }
-            "cafile" => {
-                let value: String = value.get().unwrap();
-                let mut settings = self.settings.lock().unwrap();
-                settings.cafile = Some(value.into());
-            }
             _ => unimplemented!(),
         }
     }
@@ -394,11 +379,6 @@ impl ObjectImpl for Signaller {
     fn property(&self, _obj: &Self::Type, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
         match pspec.name() {
             "address" => self.settings.lock().unwrap().address.to_value(),
-            "cafile" => {
-                let settings = self.settings.lock().unwrap();
-                let cafile = settings.cafile.as_ref();
-                cafile.and_then(|file| file.to_str()).to_value()
-            }
             _ => unimplemented!(),
         }
     }
