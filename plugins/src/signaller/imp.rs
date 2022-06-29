@@ -7,6 +7,7 @@ use gst::glib::prelude::*;
 use gst::glib::{self, WeakRef};
 use gst::subclass::prelude::*;
 use once_cell::sync::Lazy;
+use reqwest::Url;
 use std::fmt::Write;
 use std::sync::Mutex;
 
@@ -34,7 +35,7 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            address: Some("ws://127.0.0.1:8443".to_string()),
+            address: Some("http://127.0.0.1:8080/whip".to_string()),
         }
     }
 }
@@ -78,6 +79,8 @@ impl Signaller {
         let url = self.settings.lock().unwrap().address.as_ref().unwrap().clone();
 
         let send_task_handle = task::spawn(async move {
+            let mut loc: Option<String> = None;
+
             while let Some(msg) = whip_receiver.next().await {
                 if let Some(element) = element_clone.upgrade() {
                     gst::trace!(CAT, obj: &element, "Sending websocket message {:?}", msg);
@@ -97,9 +100,12 @@ impl Signaller {
                             println!("..18.");
                             //println!("{}", xsdp);
 
-                            if let Err(err) = do_whip(element_clone.clone(), id, xsdp.clone(), &url).await {
-                                if let Some(element) = element_clone.upgrade() {
-                                    element.handle_signalling_error(err.into());
+                            match do_whip(element_clone.clone(), id, xsdp.clone(), &url).await {
+                                Ok(v) => loc = v,
+                                Err(e) => {
+                                    if let Some(element) = element_clone.upgrade() {
+                                        element.handle_signalling_error(e.into());
+                                    }
                                 }
                             }
                         }
@@ -123,7 +129,7 @@ impl Signaller {
                         write!(xsdp, "{}", sdp).unwrap();
                     }
                     WhipMessage::ConsumerRemoved { id: _ } => {
-                        if let Err(err) = whip_delete(&url, &("".to_string())) {
+                        if let Err(err) = whip_delete(element_clone.clone(), &url, loc.clone()) {
                             if let Some(element) = element_clone.upgrade() {
                                 element.handle_signalling_error(err.into());
                             }
@@ -283,19 +289,36 @@ impl Signaller {
     }
 }
 
-fn whip_delete(url: &String, loc: &String) -> Result<(), Error> {
+fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: Option<String>) -> Result<(), Error> {
     println!("..ConsumerRemoved");
+
+    if loc == None {
+        return Ok(());
+    }
+
+    let mut url = Url::parse(urlstr)?;
+
+    url.set_path(loc.unwrap().as_str());
+
+    if let Some(element) = element_clone.upgrade() {
+        gst::debug!(CAT, obj: &element, "Whip Delete to url: {}", url);
+    }
 
     let rq = reqwest::blocking::Client::new();
     let _r = rq
         // .post("http://localhost:3000/foo")
-        .delete("http://192.168.86.3:7080/whip/resource/foo")
+        .delete(url)
         .send()?;
 
     Ok(())
 }
 
-async fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: String, url: &String) -> Result<(), Error> {
+async fn do_whip(
+    element_clone: WeakRef<WebRTCSink>,
+    peer_id: String,
+    mut xsdp: String,
+    url: &String,
+) -> Result<Option<String>, Error> {
     writeln!(xsdp, "a=end-of-candidates").unwrap();
 
     // println!("full sdp {}", xsdp);
@@ -313,9 +336,12 @@ async fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: 
 
     println!("post, post");
 
+    let mut xx = Option::None;
+
     if let Some(loc) = r.headers().get("Location") {
-        println!("location found: {:?}", loc);
+        xx = Some(loc.to_str().unwrap().to_string());
     }
+
     let answer_sdp = r.bytes().await?.to_vec();
 
     // println!("answer_sdp {}", String::from_utf8(answer_sdp.clone())?);
@@ -335,7 +361,9 @@ async fn do_whip(element_clone: WeakRef<WebRTCSink>, peer_id: String, mut xsdp: 
         )?;
     }
 
-    Ok(())
+    //Ok(None)
+
+    return Ok(xx);
 }
 
 #[glib::object_subclass]
