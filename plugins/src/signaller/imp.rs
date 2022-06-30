@@ -7,7 +7,8 @@ use gst::glib::prelude::*;
 use gst::glib::{self, WeakRef};
 use gst::subclass::prelude::*;
 use once_cell::sync::Lazy;
-use reqwest::Url;
+use surf::Url;
+
 use std::fmt::Write;
 use std::sync::Mutex;
 
@@ -129,7 +130,7 @@ impl Signaller {
                         write!(xsdp, "{}", sdp).unwrap();
                     }
                     WhipMessage::ConsumerRemoved { id: _ } => {
-                        if let Err(err) = whip_delete(element_clone.clone(), &url, loc.clone()) {
+                        if let Err(err) = whip_delete(element_clone.clone(), &url, loc.clone()).await {
                             if let Some(element) = element_clone.upgrade() {
                                 element.handle_signalling_error(err.into());
                             }
@@ -289,7 +290,7 @@ impl Signaller {
     }
 }
 
-fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: Option<String>) -> Result<(), Error> {
+async fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: Option<String>) -> Result<(), Error> {
     println!("..ConsumerRemoved");
 
     if loc == None {
@@ -304,11 +305,13 @@ fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: Option<
         gst::debug!(CAT, obj: &element, "Whip Delete to url: {}", url);
     }
 
-    let rq = reqwest::blocking::Client::new();
-    let _r = rq
-        // .post("http://localhost:3000/foo")
-        .delete(url)
-        .send()?;
+    // let rq = reqwest::blocking::Client::new();
+    // let _r = rq
+    //     // .post("http://localhost:3000/foo")
+    //     .delete(url)
+    //     .send()?;
+
+    let _string = surf::delete(url).recv_string().await.map_err(|e| anyhow!(e))?;
 
     Ok(())
 }
@@ -325,24 +328,24 @@ async fn do_whip(
 
     println!("pre post: {}", &xsdp);
 
-    let rq = reqwest::Client::new();
-    let r = rq
-        // .post("http://localhost:3000/foo")
-        .post(url)
+    let mut res = surf::post(url)
         .header("Content-type", "application/sdp")
-        .body(xsdp)
-        .send()
-        .await?;
+        .body_string(xsdp)
+        .await
+        .map_err(|e| anyhow!(e))?;
+    if res.status() != 201 {
+        return Err(anyhow::format_err!("Non-201 status code from WHIP remote:{}", res.status()));
+    }
 
     println!("post, post");
 
     let mut xx = Option::None;
 
-    if let Some(loc) = r.headers().get("Location") {
-        xx = Some(loc.to_str().unwrap().to_string());
+    if let Some(loc) = res.header("Location") {
+        xx = Some(loc.get(0).unwrap().to_string());
     }
 
-    let answer_sdp = r.bytes().await?.to_vec();
+    let answer_sdp = res.body_bytes().await.map_err(|e| anyhow!(e))?;
 
     // println!("answer_sdp {}", String::from_utf8(answer_sdp.clone())?);
 
