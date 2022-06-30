@@ -84,7 +84,7 @@ impl Signaller {
 
             while let Some(msg) = whip_receiver.next().await {
                 if let Some(element) = element_clone.upgrade() {
-                    gst::trace!(CAT, obj: &element, "Sending websocket message {:?}", msg);
+                    gst::trace!(CAT, obj: &element, "Received mpsc message {:?}", msg);
                 }
                 //println!("got whip msg: {:?}", msg);
                 // removed wssend
@@ -92,35 +92,22 @@ impl Signaller {
                 // testing
                 match msg {
                     WhipMessage::Ice {
-                        id,
+                        id: _,
                         candidate,
                         candix: _,
                     } => {
-                        println!("..ice");
-                        if candidate.contains("candidate:18") {
-                            println!("..18.");
-                            //println!("{}", xsdp);
-
-                            match do_whip(element_clone.clone(), id, xsdp.clone(), &url).await {
-                                Ok(v) => loc = v,
-                                Err(e) => {
-                                    if let Some(element) = element_clone.upgrade() {
-                                        element.handle_signalling_error(e.into());
-                                    }
-                                }
-                            }
-                        }
+                        //println!("..ice");
 
                         writeln!(xsdp, "a={}", candidate).unwrap();
                     }
-                    WhipMessage::Sdp { id: _, sdp } => {
-                        println!("..sdp");
+                    WhipMessage::Sdp { id, sdp } => {
+                        //println!("..sdp");
                         let mut w2 = w1.clone();
 
                         let element_cl1 = element_clone.clone();
                         task::spawn(async move {
                             task::sleep(std::time::Duration::from_millis(500)).await;
-                            if let Err(err) = w2.send(WhipMessage::GatherTimeout { id: "".to_string() }).await {
+                            if let Err(err) = w2.send(WhipMessage::GatherTimeout { id }).await {
                                 if let Some(element) = element_cl1.upgrade() {
                                     element.handle_signalling_error(err.into());
                                 }
@@ -136,12 +123,23 @@ impl Signaller {
                             }
                         }
                     }
-                    WhipMessage::GatherTimeout { id: _ } => println!("..GatherTimeout"),
+                    WhipMessage::GatherTimeout { id } => {
+                        //println!("..GatherTimeout");
+
+                        match whip_post(element_clone.clone(), id, xsdp.clone(), &url).await {
+                            Ok(v) => loc = v,
+                            Err(e) => {
+                                if let Some(element) = element_clone.upgrade() {
+                                    element.handle_signalling_error(e.into());
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             if let Some(element) = element_clone.upgrade() {
-                gst::info!(CAT, obj: &element, "Done sending");
+                gst::info!(CAT, obj: &element, "Done receiving mpsc messages");
             }
 
             // removed ws shutdown
@@ -291,18 +289,11 @@ impl Signaller {
 }
 
 async fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: Option<String>) -> Result<(), Error> {
-    println!("..ConsumerRemoved");
-
-    if loc == None {
-        return Ok(());
-    }
-
     let mut url = Url::parse(urlstr)?;
-
-    url.set_path(loc.unwrap().as_str());
+    url.set_path(loc.unwrap_or_default().as_str());
 
     if let Some(element) = element_clone.upgrade() {
-        gst::debug!(CAT, obj: &element, "Whip Delete to url: {}", url);
+        gst::debug!(CAT, obj: &element, "whip_delete() for url: {} loc", url);
     }
 
     // let rq = reqwest::blocking::Client::new();
@@ -316,8 +307,8 @@ async fn whip_delete(element_clone: WeakRef<WebRTCSink>, urlstr: &String, loc: O
     Ok(())
 }
 
-async fn do_whip(
-    element_clone: WeakRef<WebRTCSink>,
+async fn whip_post(
+    element_weak: WeakRef<WebRTCSink>,
     peer_id: String,
     mut xsdp: String,
     url: &String,
@@ -326,7 +317,10 @@ async fn do_whip(
 
     // println!("full sdp {}", xsdp);
 
-    println!("pre post: {}", &xsdp);
+    //println!("pre post: {}", &xsdp);
+    if let Some(element) = element_weak.upgrade() {
+        gst::info!(CAT, obj: &element, "POST to whip server");
+    }
 
     let mut res = surf::post(url)
         .header("Content-type", "application/sdp")
@@ -336,8 +330,6 @@ async fn do_whip(
     if res.status() != 201 {
         return Err(anyhow::format_err!("Non-201 status code from WHIP remote:{}", res.status()));
     }
-
-    println!("post, post");
 
     let mut xx = Option::None;
 
@@ -349,10 +341,8 @@ async fn do_whip(
 
     // println!("answer_sdp {}", String::from_utf8(answer_sdp.clone())?);
 
-    println!("######### call handle_sdp");
-
     // drop(state);
-    if let Some(element) = element_clone.upgrade() {
+    if let Some(element) = element_weak.upgrade() {
         gst::trace!(CAT, obj: &element, "Giving SDP to sink");
 
         element.handle_sdp(
